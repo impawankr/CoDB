@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+package codb;
+
+// ─────────────────────────────────────────────────────────────
+//  KVStore Service — Core client-facing API
+//  Phase 1: basic put/get/delete
+//  Phase 4+: version field added for quorum conflict detection
+// ─────────────────────────────────────────────────────────────
+
+service KVStore {
+  rpc Put    (PutRequest)    returns (PutResponse);
+  rpc Get    (GetRequest)    returns (GetResponse);
+  rpc Delete (DeleteRequest) returns (DeleteResponse);
+}
+
+message PutRequest {
+  string key     = 1;
+  string value   = 2;
+  // Phase 4+: client echoes back the VC context it read
+  // VectorClock context = 3;
+}
+
+message PutResponse {
+  bool   success = 1;
+  string error   = 2;
+}
+
+message GetRequest {
+  string key = 1;
+}
+
+message GetResponse {
+  bool   found = 1;
+  string value = 2;
+  // Phase 4+: may return multiple siblings on conflict
+  // repeated VersionedValue siblings = 3;
+}
+
+message DeleteRequest {
+  string key = 1;
+}
+
+message DeleteResponse {
+  bool   success = 1;
+  string error   = 2;
+}
