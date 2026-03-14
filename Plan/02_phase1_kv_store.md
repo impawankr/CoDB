@@ -349,11 +349,11 @@ docs(phase1): add README with build and run instructions
 
 ## Completion Criteria
 
-- [ ] Server starts and accepts gRPC connections
-- [ ] `put`, `get`, `delete` work correctly over the network
-- [ ] Concurrent clients do not cause data races (verified with thread sanitizer)
-- [ ] Getting a non-existent key returns a clear "not found" response
-- [ ] Server restart clears all data (confirming no persistence — motivation for Phase 2)
+- [x] Server starts and accepts gRPC connections
+- [x] `put`, `get`, `delete` work correctly over the network
+- [x] Concurrent clients do not cause data races (verified with thread sanitizer)
+- [x] Getting a non-existent key returns a clear "not found" response
+- [x] Server restart clears all data (confirming no persistence — motivation for Phase 2)
 
 ---
 

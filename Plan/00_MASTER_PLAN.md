@@ -47,11 +47,11 @@ Every design pattern in this roadmap exists because of one of these three constr
 
 ## Roadmap Overview
 
-| Phase | Name                          | Key Pattern                       | Real System Reference    |
-| ----- | ----------------------------- | --------------------------------- | ------------------------ |
-| 0     | Mental Models                 | First-principles thinking         | —                        |
-| 1     | Single Node KV Store          | RPC Service Layer                 | etcd, Redis              |
-| 2     | Write-Ahead Log (WAL)         | Durability & Crash Recovery       | PostgreSQL, RocksDB      |
+| Phase | Name                          | Key Pattern                       | Real System Reference    | Status     |
+| ----- | ----------------------------- | --------------------------------- | ------------------------ | ---------- |
+| 0     | Mental Models                 | First-principles thinking         | —                        | ✅ Done    |
+| 1     | Single Node KV Store          | RPC Service Layer                 | etcd, Redis              | ✅ Done    |
+| 2     | Write-Ahead Log (WAL)         | Durability & Crash Recovery       | PostgreSQL, RocksDB      | 👉 Current |
 | 3     | Leader–Follower Replication   | Log Shipping                      | MySQL, PostgreSQL        |
 | 4     | Quorum Replication            | Dynamo-style R+W>N                | Amazon Dynamo, Cassandra |
 | 5     | Consistent Hashing & Sharding | Partitioning                      | Cassandra, DynamoDB      |

@@ -5,8 +5,11 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Export compile_commands.json → VS Code IntelliSense picks up all include paths automatically
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # ── Dependencies ──────────────────────────────────────────────
-find_package(Protobuf REQUIRED)
+#find_package(Protobuf REQUIRED)
 find_package(gRPC CONFIG REQUIRED)
 find_package(Threads REQUIRED)
 
