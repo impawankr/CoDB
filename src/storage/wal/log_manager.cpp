@@ -15,7 +15,6 @@
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constructor
-//
 // Creates the data directory if it does not already exist, then opens (or
 // creates) the WAL file at  data_dir/wal.log  via LogWriter.
 //
