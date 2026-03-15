@@ -47,10 +47,22 @@ target_link_libraries(codb_proto PUBLIC
 )
 
 # ── Storage library ───────────────────────────────────────────
+# Phase 1: mem_kv_store  (in-memory, volatile)
+# Phase 2: WAL sources   (log_entry, log_writer, log_reader, log_manager)
+#          wal_kv_store  (IKVStore backed by WAL — wired in once implemented)
 add_library(codb_storage
   src/storage/mem_kv_store.cpp
+  # ── Phase 2: WAL ──────────────────────────────────────────
+  src/storage/wal/log_entry.cpp
+  src/storage/wal/log_writer.cpp
+  src/storage/wal/log_reader.cpp
+  src/storage/wal/log_manager.cpp
+  src/storage/wal_kv_store.cpp
 )
-target_include_directories(codb_storage PUBLIC src/storage)
+target_include_directories(codb_storage PUBLIC
+  src/storage          # kv_store.h, mem_kv_store.h, wal_kv_store.h
+  src/storage/wal      # log_entry.h, log_writer.h, log_reader.h, log_manager.h
+)
 target_link_libraries(codb_storage PUBLIC Threads::Threads)
 
 # ── Server ────────────────────────────────────────────────────

@@ -1,6 +1,7 @@
 #include "kv_service_impl.h"
 #include "mem_kv_store.h"
 #include <grpcpp/grpcpp.h>
+#include <wal_kv_store.h>
 
 int main(int argc, char **argv)
 {
@@ -11,7 +12,11 @@ int main(int argc, char **argv)
     // Create storage backend (MemKVStore)
     // we can swap this out later with a WAL-backed store
     // without changing the service layer.
-    auto store = std::make_shared<MemKVStore>();
+
+    // auto store = std::make_shared<MemKVStore>();
+    //  we use wal.log as the filename inside that directory, managed by LogManager
+
+    auto store = std::make_shared<WalKVStore>("./data");
     KVServiceImpl service(store);
 
     grpc::ServerBuilder builder;
@@ -26,8 +31,8 @@ int main(int argc, char **argv)
     return 0;
 }
 
-// 1. We create a MemKVStore instance, which is our in-memory key-value store.
-// 2. We create a KVServiceImpl instance, passing the MemKVStore to it
+// 1. We create a WalKVStore instance, which is our WAL-backed key-value store.
+// 2. We create a KVServiceImpl instance, passing the WalKVStore to it
 // 3. We set up a gRPC server using grpc::ServerBuilder:
 //    - We specify the address and port to listen on (0.0.0.0:50051 by default)
 //    - We register our KVServiceImpl instance as the service handler

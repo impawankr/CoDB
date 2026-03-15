@@ -21,8 +21,8 @@ By the end, CoDB implements the same core patterns found in:
 
 | Phase | Feature                     | Status         |
 | ----- | --------------------------- | -------------- |
-| 1     | Single Node KV (gRPC)       | ✅ Done    |
-| 2     | Write-Ahead Log             | 👉 Current |
+| 1     | Single Node KV (gRPC)       | ✅ Done        |
+| 2     | Write-Ahead Log             | 👉 Current     |
 | 3     | Leader–Follower Replication | 🔲 Not Started |
 | 4     | Quorum Replication          | 🔲 Not Started |
 | 5     | Consistent Hashing          | 🔲 Not Started |

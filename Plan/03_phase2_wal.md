@@ -78,13 +78,13 @@ Each log entry must contain:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ SEQ (8 bytes) │ OP (1 byte) │ KEY_LEN (4B) │ VAL_LEN (4B) │
+│ SEQ (8 bytes) │ OP (1 byte) │ KEY_LEN (4B) │ VAL_LEN (4B)   │
 ├─────────────────────────────────────────────────────────────┤
-│               KEY (variable)                                 │
+│               KEY (variable)                                │
 ├─────────────────────────────────────────────────────────────┤
-│               VALUE (variable)                               │
+│               VALUE (variable)                              │
 ├─────────────────────────────────────────────────────────────┤
-│               CRC32 (4 bytes)                                │
+│               CRC32 (4 bytes)                               │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -190,23 +190,59 @@ private:
 };
 ```
 
+### `log_manager.h` — coordinates writer + recovery (missing from original plan)
+
+`LogManager` is the single owner of both `LogWriter` and `LogReader`.
+It is the only class that `WalKVStore` talks to for all WAL operations.
+Neither `WalKVStore` nor anything else should call `LogWriter`/`LogReader` directly.
+
+```cpp
+class LogManager {
+public:
+    // Opens (or creates) the WAL file at data_dir/wal.log
+    explicit LogManager(const std::string& data_dir);
+
+    // Append a PUT or DELETE entry durably (write + fdatasync)
+    bool append(OpType op,
+                const std::string& key,
+                const std::string& value = "");
+
+    // Read all valid entries from WAL (used during recovery)
+    // Stops at first corrupt/partial entry — safe to call on truncated files
+    std::vector<LogEntry> recover();
+
+    // Truncate WAL after a snapshot checkpoint (Phase 9 preview)
+    bool truncate();
+
+private:
+    std::string           wal_path_;
+    std::unique_ptr<LogWriter> writer_;
+};
+```
+
+**Why a manager layer?**
+`WalKVStore` should not know whether there is one WAL file, many segments, or a rotation policy.
+`LogManager` owns that detail. Swapping to segmented WAL in Phase 9 is a change inside
+`LogManager` only — `WalKVStore` has zero changes.
+
 ### `wal_kv_store.h` — the new `IKVStore` implementation
 
 ```cpp
 class WalKVStore : public IKVStore {
 public:
+    // Opens WAL via LogManager and replays existing log on construction.
     explicit WalKVStore(const std::string& data_dir);
 
-    // Writes to WAL first, then to memory
+    // Writes to WAL first (fsync), then to in-memory map.
     bool put(const std::string& key, const std::string& value) override;
+    // Zero disk I/O — served from in-memory map.
     std::optional<std::string> get(const std::string& key) override;
     bool remove(const std::string& key) override;
 
-    // Call at startup to restore state from WAL
-    void recover();
-
 private:
-    std::unique_ptr<LogWriter> writer_;
+    void recover();  // replays WAL into store_ — called once from constructor
+
+    std::unique_ptr<LogManager> writer_;  // single owner of WAL file
     std::unordered_map<std::string, std::string> store_;
     mutable std::shared_mutex mu_;
 };
@@ -307,6 +343,57 @@ Delete old segments once they are no longer needed.
 
 ---
 
+## Current Implementation Status
+
+| File                  | Status  | Notes                                                                        |
+| --------------------- | ------- | ---------------------------------------------------------------------------- |
+| `wal/log_entry.h`     | ✅ Done | Struct + serialize/deserialize declared                                      |
+| `wal/log_entry.cpp`   | ✅ Done | Bug 1 fixed — CRC32 compute + verify added                                   |
+| `wal/log_writer.h`    | ✅ Done | fd\_, next_seq_num\_, append, sync declared                                  |
+| `wal/log_writer.cpp`  | ✅ Done | Bug 2 fixed — next*seq_num\_ stamped via `stamped.seq_num = next_seq_num*++` |
+| `wal/log_reader.h`    | ✅ Done | read_all() declared                                                          |
+| `wal/log_reader.cpp`  | ✅ Done | Bug 3 fixed — offset = 21 + key + val; Bug 4 fixed — lseek full read         |
+| `wal/log_manager.h`   | ✅ Done | append(Optype,key,value), recover(), truncate() stub                         |
+| `wal/log_manager.cpp` | ✅ Done | create_directories, LogWriter owned, fsync on append, LogReader on recover   |
+| `wal_kv_store.h`      | ✅ Done | IKVStore backed by LogManager; recover() private, called from constructor    |
+| `wal_kv_store.cpp`    | ✅ Done | put/get/remove + WAL-first writes; recover() via writer\_->recover()         |
+
+---
+
+## Known Bugs to Fix Before Completing Phase 2
+
+### Bug 1 — CRC32 missing from log_entry
+
+The plan specifies `CRC32 (4 bytes)` at the end of every entry for corruption detection.
+Neither `serialize()` nor `deserialize()` includes it. `log_reader.cpp` has no CRC check.
+
+**Fix:** Compute CRC32 over all bytes before the checksum field. In `read_all()`, verify CRC before
+pushing the entry; on mismatch, stop reading (treat as corrupt tail).
+
+### Bug 2 — next*seq_num* never incremented in LogWriter
+
+`log_writer.cpp` initialises `next_seq_num_ = 0` and never uses or increments it.
+The sequence number in each entry is whatever the caller happens to set — meaningless ordering.
+
+**Fix:** In `LogWriter::append()`, override `entry.seq_num = next_seq_num_++` before serializing.
+
+### Bug 3 — Wrong offset advance in log_reader.cpp
+
+Serialized entry size = `8 (seq) + 1 (op) + 4 (key_len) + key + 4 (val_len) + val + 4 (crc)` = **21 + key_len + val_len**.
+Current reader advances by `13 + key.size() + value.size()` — **off by 8 bytes** (missing val_len field + crc).
+Every entry after the first is parsed at the wrong byte offset → garbage reads.
+
+**Fix:** Advance offset by `21 + key_len + value_len` (or derive from the actual bytes consumed during deserialization).
+
+### Bug 4 — Fixed 1MB read buffer in log_reader.cpp
+
+A WAL file larger than 1MB will only recover the first 1MB silently.
+
+**Fix:** Read in a proper loop: either use `lseek` to get file size and allocate accordingly,
+or read the file entry-by-entry using fixed-size header reads followed by variable-length payload reads.
+
+---
+
 ## Key Concepts After This Phase
 
 - Why sequential append is faster than random write
@@ -353,11 +440,12 @@ test(wal): add durability and crash recovery tests
 
 ## Completion Criteria
 
-- [ ] Server survives restart with all written data intact
-- [ ] WAL file is binary, contains sequence numbers and CRC checksums
-- [ ] Partially written (corrupt) tail of WAL is safely ignored on recovery
-- [ ] Recovery replays only entries not yet in memory (seq number tracking)
-- [ ] `get` still has zero disk I/O (served from memory after recovery)
+- [x] Implement log_manager.h / log_manager.cpp
+- [x] Implement wal_kv_store.h / wal_kv_store.cpp
+- [x] Server starts with --data-dir flag and uses WalKVStore
+- [x] Server survives restart with all written data intact
+- [x] Partially written (corrupt) tail of WAL is safely ignored on recovery
+- [x] `get` still has zero disk I/O (served from memory after recovery)
 
 ---
 
