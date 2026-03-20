@@ -595,11 +595,11 @@ test(replication): add 3-node cluster integration test
 
 ### Completion Criteria
 
-- [ ] 3-node cluster starts with one leader and two followers
+- [x] 3-node cluster starts with one leader and two followers
 - [ ] Write to leader replicates to both followers within 50 ms
 - [ ] Follower that reconnects after downtime catches up via `RequestEntries` stream
 - [x] Write to a follower directly returns `FAILED_PRECONDITION` (not the leader)
-- [ ] Leader crash preserves all replicated data on followers
+- [x] Leader crash preserves all replicated data on followers
 
 ### How to run a 3-node cluster
 
