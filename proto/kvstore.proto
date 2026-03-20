@@ -2,28 +2,65 @@ syntax = "proto3";
 
 package codb;
 
-// ─────────────────────────────────────────────────────────────
-//  KVStore Service — Core client-facing API
-//  Phase 1: basic put/get/delete
-//  Phase 4+: version field added for quorum conflict detection
-// ─────────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+//  codb — Distributed Key-Value Store Protocol Definitions
+//
+//  This file defines two services:
+//
+//    1. KVStore            — client-facing API (put / get / delete)
+//                            Implemented by KVServiceImpl in src/server/
+//
+//    2. ReplicationService — internal node-to-node API (log shipping)
+//                            Implemented by FollowerService in src/replication/
+//                            Called by LeaderReplicator in src/replication/
+//
+//  Phase roadmap for this file:
+//    Phase 1  → KVStore service (done)
+//    Phase 3  → ReplicationService (done)
+//    Phase 4  → VectorClock fields on PutRequest/GetResponse (placeholder comments below)
+//    Phase 7  → Raft RPCs will be added as a third service (RequestVote, Heartbeat)
+// ═════════════════════════════════════════════════════════════════════════════
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  SERVICE: KVStore
+//
+//  The public API that clients (codb_client) call.
+//  The server (KVServiceImpl) implements this service.
+//
+//  Design rule: this service never leaks internal concepts like sequence numbers
+//  or leader identity — those belong to ReplicationService below.
+// ─────────────────────────────────────────────────────────────────────────────
 service KVStore {
+  // Write a key-value pair.
+  // On a replicated cluster, only the leader accepts Put — followers return
+  // FAILED_PRECONDITION. The leader writes to WAL, updates memory, then
+  // replicates to all followers before responding.
   rpc Put    (PutRequest)    returns (PutResponse);
+
+  // Read a value by key.
+  // Always served from the in-memory map — zero disk I/O.
+  // Phase 4+: may return multiple conflicting versions (siblings) if quorum
+  // detects a write conflict. For now, returns a single value.
   rpc Get    (GetRequest)    returns (GetResponse);
+
+  // Delete a key. Same leader-only + WAL-first semantics as Put.
   rpc Delete (DeleteRequest) returns (DeleteResponse);
 }
 
+// ── KVStore messages ──────────────────────────────────────────────────────────
+
 message PutRequest {
-  string key     = 1;
-  string value   = 2;
-  // Phase 4+: client echoes back the VC context it read
+  string key   = 1;
+  string value = 2;
+  // Phase 4+: client echoes back the VectorClock it received on the last Get,
+  // so the server can detect concurrent conflicting writes (last-write-wins vs siblings).
   // VectorClock context = 3;
 }
 
 message PutResponse {
-  bool   success = 1;
-  string error   = 2;
+  bool   success = 1; // false if node is not the leader, or WAL write failed
+  string error   = 2; // human-readable reason on failure
 }
 
 message GetRequest {
@@ -31,9 +68,10 @@ message GetRequest {
 }
 
 message GetResponse {
-  bool   found = 1;
-  string value = 2;
-  // Phase 4+: may return multiple siblings on conflict
+  bool   found = 1; // false means the key does not exist (never written, or deleted)
+  string value = 2; // only meaningful when found = true
+  // Phase 4+: if a quorum detects divergent replicas, return all versions here
+  // so the client (or application) can reconcile them (like Dynamo siblings).
   // repeated VersionedValue siblings = 3;
 }
 
@@ -42,6 +80,109 @@ message DeleteRequest {
 }
 
 message DeleteResponse {
-  bool   success = 1;
+  bool   success = 1; // false if node is not the leader, or WAL write failed
   string error   = 2;
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  SERVICE: ReplicationService
+//
+//  Internal node-to-node API — clients never call this directly.
+//
+//  Two RPCs cover the full replication lifecycle:
+//
+//    AppendEntries  — normal path: leader pushes new entries to followers
+//                     immediately after writing to its own WAL.
+//
+//    RequestEntries — catch-up path: a follower that was offline (or just
+//                     started) asks the leader "give me everything from seq N".
+//                     The leader responds with a batch of serialized log entries.
+//
+//  Why push (AppendEntries) for normal path but pull (RequestEntries) for catch-up?
+//    Push is lower latency during normal operation — the leader already has the
+//    entry in hand and fires it immediately.
+//    Pull is simpler for catch-up — the follower knows exactly what it's missing
+//    and can ask for precisely that range without the leader tracking per-follower
+//    cursors continuously.
+//
+//  Phase 7 (Raft): AppendEntries will gain term/prevLogIndex/prevLogTerm fields
+//  for leader election safety. The message structure is forward-compatible — just
+//  add fields; old fields keep their numbers.
+// ─────────────────────────────────────────────────────────────────────────────
+service ReplicationService {
+  // Normal replication path (leader → follower).
+  // Leader calls this after writing an entry to its own WAL.
+  // Follower writes the entry to its own WAL and applies it to memory,
+  // then responds with its current follower_seq so the leader can track lag.
+  rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse);
+
+  // Catch-up path (follower → leader).
+  // A follower that is behind sends its last known seq; the leader streams back
+  // entries from that seq onward in batches until the follower is caught up.
+  // Server-streaming lets the leader flush entries as it reads them from the WAL
+  // without buffering the entire range in memory first.
+  rpc RequestEntries(FetchLogRequest) returns (stream FetchLogResponse);
+}
+
+// ── ReplicationService messages ───────────────────────────────────────────────
+
+message AppendEntriesRequest {
+  // Identifies which node is the current leader.
+  // Followers use this to reject stale requests if a new leader is elected
+  // (relevant in Phase 7 Raft; harmless to include now).
+  string leader_id = 1;
+
+  // One or more serialized LogEntry records packed together.
+  // Format: the same binary layout written by LogEntry::serialize() in Phase 2.
+  //   [ entry1_bytes_len(4B) | entry1_bytes | entry2_bytes_len(4B) | entry2_bytes | ... ]
+  // Using raw bytes lets us reuse the existing CRC-validated serializer without
+  // duplicating the format as proto fields. The follower calls LogEntry::deserialize()
+  // on each record — CRC is verified automatically.
+  bytes log_entries = 2;
+
+  // Sequence number of the last entry in this batch (from the leader's WAL).
+  // The follower uses this to detect out-of-order delivery and for idempotency:
+  // if follower_seq >= leader_seq the follower can safely ignore the batch.
+  uint64 leader_seq = 3;
+}
+
+message AppendEntriesResponse {
+  // true  → all entries written to follower WAL and applied to memory.
+  // false → follower rejected: out-of-order seq, WAL write failed, or disk full.
+  //         Leader must treat false as a hard error and surface it to the client.
+  bool success = 1;
+
+  // Highest sequence number the follower has successfully committed.
+  // Leader uses this to calculate replication lag:
+  //   lag = leader_seq - follower_seq
+  // If follower_seq < (leader_seq - threshold), leader may trigger catch-up.
+  uint64 follower_seq = 2;
+
+  // Human-readable error message, populated only when success = false.
+  string error = 3;
+}
+
+message FetchLogRequest {
+  // Who is asking — useful for leader-side logging and per-follower lag metrics.
+  string follower_id = 1;
+
+  // Follower wants entries starting at this sequence number (inclusive).
+  // Follower sets this to (its own last_seq + 1) on each request.
+  uint64 from_seq = 2;
+}
+
+message FetchLogResponse {
+  // Serialized log entries in the same packed format as AppendEntriesRequest.log_entries.
+  // May be empty if the leader has no entries >= from_seq yet (follower is caught up).
+  bytes log_entries = 1;
+
+  // Sequence number of the last entry included in this batch.
+  // Follower compares this against the leader's current seq to decide if another
+  // FetchLog call is needed (i.e., if last_seq < leader's current seq, loop again).
+  uint64 last_seq = 2;
+
+  // Populated on error (e.g., from_seq is behind the leader's oldest retained entry
+  // — would require a full snapshot transfer instead of log replay).
+  string error = 3;
 }

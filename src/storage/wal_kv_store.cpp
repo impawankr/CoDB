@@ -10,14 +10,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Constructor
 //
-// 1. Creates LogManager → creates data_dir if needed, opens data_dir/wal.log.
-// 2. Calls recover() to replay any existing WAL entries into store_.
-//    After the constructor returns the store is ready to serve requests.
+// Creates LogManager → creates data_dir if needed, opens data_dir/wal.log.
+// Does NOT replay the WAL here — caller must invoke recover() explicitly
+// after construction (see main.cpp) so recovery happens at a predictable
+// point before the gRPC server starts accepting requests.
 // ─────────────────────────────────────────────────────────────────────────────
 WalKVStore::WalKVStore(const std::string &data_dir)
     : writer_(std::make_unique<LogManager>(data_dir))
 {
-    recover();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -71,7 +71,7 @@ bool WalKVStore::remove(const std::string &key)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// recover (private)
+// recover (public)
 //
 // Delegates to LogManager::recover() which constructs a LogReader, reads all
 // valid entries (stopping at the first CRC mismatch / partial write), and

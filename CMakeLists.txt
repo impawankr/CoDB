@@ -65,15 +65,36 @@ target_include_directories(codb_storage PUBLIC
 )
 target_link_libraries(codb_storage PUBLIC Threads::Threads)
 
+# ── Replication library ───────────────────────────────────────
+# Phase 3: ReplicationLog, LeaderReplicator, FollowerService
+# All three compile into a separate library so they can be tested independently.
+add_library(codb_replication
+  src/replication/replication_log.cpp
+  src/replication/leader_replicator.cpp
+  src/replication/follower_service.cpp
+)
+target_include_directories(codb_replication PUBLIC
+  src/replication   # replication_log.h, leader_replicator.h, follower_service.h
+  src/server        # node_config.h
+  src/storage       # kv_store.h (IKVStore used by FollowerService)
+  src/storage/wal   # log_entry.h, log_manager.h (used by ReplicationLog)
+)
+target_link_libraries(codb_replication PUBLIC
+  codb_proto        # kvstore.grpc.pb.h — ReplicationService stubs
+  codb_storage      # LogManager, IKVStore
+  gRPC::grpc++
+)
+
 # ── Server ────────────────────────────────────────────────────
 add_executable(codb_server
   src/server/kv_service_impl.cpp
   src/server/main.cpp
 )
-target_include_directories(codb_server PRIVATE src/server src/storage)
+target_include_directories(codb_server PRIVATE src/server src/storage src/replication)
 target_link_libraries(codb_server PRIVATE
   codb_proto
   codb_storage
+  codb_replication
   gRPC::grpc++
 )
 

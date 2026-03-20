@@ -29,10 +29,11 @@ public:
     std::optional<std::string> get(const std::string &key) override;
     bool remove(const std::string &key) override;
 
-private:
-    // Replays WAL into store_ — called once from the constructor.
+    // Replays the WAL into store_ on startup.
+    // Must be called once from main() after construction.
     void recover();
 
+private:
     std::unique_ptr<LogManager> writer_; // owns the WAL file
     std::unordered_map<std::string, std::string> store_;
     mutable std::shared_mutex mu_;
